@@ -22,7 +22,7 @@ def get_quantum_circuit():
     unique_nodes = sorted(set(all_nodes))
     # Create mapping from original IDs to consecutive IDs (0, 1, 2, ...)
     node_id_map = {old_id: new_id for new_id, old_id in enumerate(unique_nodes)}
-    num_categories = len(unique_nodes) - 1  # -1 because we don't count the dummy category
+    num_categories = len(unique_nodes)  # Total number of unique node types
 
     # Create datasets
     train_set = DAGDataset(num_categories, label=True)
