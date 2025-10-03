@@ -1,10 +1,27 @@
-import dgl.sparse as dglsp
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from einops import rearrange
+
+# PyTorch sparse matrix operations wrapper
+# Replaces dgl.sparse to fix H100 GPU illegal memory access errors
+def create_sparse_matrix(edge_index, shape, device):
+    """Create PyTorch sparse COO tensor instead of dgl.sparse.spmatrix"""
+    if edge_index.shape[1] == 0:
+        indices = torch.zeros((2, 0), dtype=torch.long, device=device)
+        values = torch.zeros(0, dtype=torch.float32, device=device)
+    else:
+        indices = edge_index.to(device)
+        values = torch.ones(edge_index.shape[1], dtype=torch.float32, device=device)
+    return torch.sparse_coo_tensor(indices, values, size=shape, device=device).coalesce()
+
+def sparse_matmul(sparse_mat, dense_mat):
+    """Perform sparse @ dense multiplication using PyTorch"""
+    if sparse_mat._nnz() == 0:
+        return torch.zeros(sparse_mat.shape[0], dense_mat.shape[1], dtype=dense_mat.dtype, device=dense_mat.device)
+    return torch.sparse.mm(sparse_mat, dense_mat)
 
 __all__ = [
     'LayerDAG'
@@ -38,11 +55,10 @@ class BiMPNNLayer(nn.Module):
         self.W_self = nn.Linear(in_size, out_size)
 
     def forward(self, A, A_T, h_n):
-        if A.nnz == 0:
+        if A._nnz() == 0:
             h_n_out = self.W_self(h_n)
         else:
-            h_n_out = A @ self.W(h_n) + A_T @ self.W_trans(h_n) +\
-                self.W_self(h_n)
+            h_n_out = sparse_matmul(A, self.W(h_n)) + sparse_matmul(A_T, self.W_trans(h_n)) + self.W_self(h_n)
         return F.gelu(h_n_out)
 
 class OneHotPE(nn.Module):
@@ -119,7 +135,7 @@ class BiMPNNEncoder(nn.Module):
             self.bn_g = nn.BatchNorm1d(hidden_size)
 
     def forward(self, A, x_n, abs_level, rel_level, y=None, A_n2g=None):
-        A_T = A.T
+        A_T = A.transpose(0, 1)
         h_n = self.x_n_emb(x_n)
 
         if self.pe == 'abs_level':
@@ -146,11 +162,11 @@ class BiMPNNEncoder(nn.Module):
         if self.pool is None:
             return h_n
         elif self.pool == 'sum':
-            h_g = A_n2g @ h_n
+            h_g = sparse_matmul(A_n2g, h_n)
             return self.bn_g(h_g)
         elif self.pool == 'mean':
-            h_g = A_n2g @ h_n
-            h_g = h_g / A_n2g.sum(dim=1).unsqueeze(-1)
+            h_g = sparse_matmul(A_n2g, h_n)
+            h_g = h_g / A_n2g.sum(dim=1).to_dense().unsqueeze(-1)
             return self.bn_g(h_g)
 
 class GraphClassifier(nn.Module):
@@ -704,9 +720,9 @@ class LayerDAG(nn.Module):
                 batch_query_src[e_t_mask]
             ]).to(device)
 
-            A = dglsp.spmatrix(
+            A = create_sparse_matrix(
                 torch.cat([batch_edge_index, edge_index_t], dim=1),
-                shape=(num_nodes, num_nodes)).to(device)
+                shape=(num_nodes, num_nodes), device=device)
             t_x_e_tensor = torch.LongTensor([t_x_e])[None, :].expand(
                 num_queries, -1).to(device)
             e_0_logits = self.edge_pred_model(
@@ -754,7 +770,7 @@ class LayerDAG(nn.Module):
             return batch_edge_index
 
         N = num_nodes_cumsum[-1].item()
-        batch_A = dglsp.spmatrix(batch_edge_index, shape=(N, N)).to(device)
+        batch_A = create_sparse_matrix(batch_edge_index, shape=(N, N), device=device)
 
         return batch_A
 
@@ -771,7 +787,7 @@ class LayerDAG(nn.Module):
         n2g_index = torch.stack([gids, nids])
 
         N = num_nodes_cumsum[-1].item()
-        batch_A_n2g = dglsp.spmatrix(n2g_index, shape=(batch_size, N)).to(device)
+        batch_A_n2g = create_sparse_matrix(n2g_index, shape=(batch_size, N), device=device)
 
         return batch_A_n2g
 
