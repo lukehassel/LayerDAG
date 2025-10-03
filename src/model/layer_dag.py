@@ -19,9 +19,20 @@ def create_sparse_matrix(edge_index, shape, device):
 
 def sparse_matmul(sparse_mat, dense_mat):
     """Perform sparse @ dense multiplication using PyTorch"""
+    # Convert DGL SparseMatrix to PyTorch sparse tensor if needed
+    if not isinstance(sparse_mat, torch.Tensor):
+        # DGL SparseMatrix - convert to PyTorch sparse COO tensor
+        indices = sparse_mat.indices()
+        shape = sparse_mat.shape
+        sparse_mat = torch.sparse_coo_tensor(
+            indices,
+            torch.ones(indices.shape[1], dtype=dense_mat.dtype, device=dense_mat.device),
+            size=shape,
+            device=dense_mat.device
+        ).coalesce()
+
     # Check number of non-zero elements
-    nnz = sparse_mat._nnz() if hasattr(sparse_mat, '_nnz') else sparse_mat.indices().shape[1]
-    if nnz == 0:
+    if sparse_mat._nnz() == 0:
         return torch.zeros(sparse_mat.shape[0], dense_mat.shape[1], dtype=dense_mat.dtype, device=dense_mat.device)
     return torch.sparse.mm(sparse_mat, dense_mat)
 
@@ -58,7 +69,12 @@ class BiMPNNLayer(nn.Module):
 
     def forward(self, A, A_T, h_n):
         # Check if sparse matrix is empty
-        nnz = A._nnz() if hasattr(A, '_nnz') else A.indices().shape[1]
+        if isinstance(A, torch.Tensor):
+            nnz = A._nnz()
+        else:
+            # DGL SparseMatrix
+            nnz = A.indices().shape[1] if hasattr(A, 'indices') else 0
+
         if nnz == 0:
             h_n_out = self.W_self(h_n)
         else:
@@ -139,7 +155,12 @@ class BiMPNNEncoder(nn.Module):
             self.bn_g = nn.BatchNorm1d(hidden_size)
 
     def forward(self, A, x_n, abs_level, rel_level, y=None, A_n2g=None):
-        A_T = A.t()
+        # Handle transpose for both PyTorch and DGL sparse tensors
+        if isinstance(A, torch.Tensor):
+            A_T = A.t()
+        else:
+            # DGL SparseMatrix has .T property
+            A_T = A.T
         h_n = self.x_n_emb(x_n)
 
         if self.pe == 'abs_level':
