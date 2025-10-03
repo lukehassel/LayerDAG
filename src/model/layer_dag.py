@@ -19,8 +19,9 @@ def create_sparse_matrix(edge_index, shape, device):
 
 def sparse_matmul(sparse_mat, dense_mat):
     """Perform sparse @ dense multiplication using PyTorch"""
-    # PyTorch sparse tensors use _nnz() method
-    if sparse_mat._nnz() == 0:
+    # Check number of non-zero elements
+    nnz = sparse_mat._nnz() if hasattr(sparse_mat, '_nnz') else sparse_mat._indices().shape[1]
+    if nnz == 0:
         return torch.zeros(sparse_mat.shape[0], dense_mat.shape[1], dtype=dense_mat.dtype, device=dense_mat.device)
     return torch.sparse.mm(sparse_mat, dense_mat)
 
@@ -57,7 +58,8 @@ class BiMPNNLayer(nn.Module):
 
     def forward(self, A, A_T, h_n):
         # Check if sparse matrix is empty
-        if A._nnz() == 0:
+        nnz = A._nnz() if hasattr(A, '_nnz') else A._indices().shape[1]
+        if nnz == 0:
             h_n_out = self.W_self(h_n)
         else:
             h_n_out = sparse_matmul(A, self.W(h_n)) + sparse_matmul(A_T, self.W_trans(h_n)) + self.W_self(h_n)
