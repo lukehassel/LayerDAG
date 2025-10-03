@@ -135,7 +135,7 @@ class BiMPNNEncoder(nn.Module):
             self.bn_g = nn.BatchNorm1d(hidden_size)
 
     def forward(self, A, x_n, abs_level, rel_level, y=None, A_n2g=None):
-        A_T = A.transpose(0, 1)
+        A_T = A.t()
         h_n = self.x_n_emb(x_n)
 
         if self.pe == 'abs_level':
