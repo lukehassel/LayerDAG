@@ -41,3 +41,23 @@ def get_tpu_tile():
     test_set = to_dag_dataset(test_set, num_categories)
 
     return train_set, val_set, test_set
+
+def get_random_small():
+    root_path = os.path.dirname(os.path.abspath(__file__))
+    root_path = os.path.join(root_path, '../../data_files/random_small_processed')
+
+    train_path = os.path.join(root_path, 'train.pth')
+    val_path = os.path.join(root_path, 'val.pth')
+    test_path = os.path.join(root_path, 'test.pth')
+
+    print('Loading Random Small dataset...')
+    train_set = torch.load(train_path)
+    val_set = torch.load(val_path)
+    test_set = torch.load(test_path)
+
+    num_categories = torch.cat(train_set['x_n_list']).max().item() + 1
+    train_set = to_dag_dataset(train_set, num_categories)
+    val_set = to_dag_dataset(val_set, num_categories)
+    test_set = to_dag_dataset(test_set, num_categories)
+
+    return train_set, val_set, test_set
