@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import dgl
 import numpy as np
 import pydantic

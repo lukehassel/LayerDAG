@@ -28,9 +28,15 @@ class LayerDAGBaseDataset(Dataset):
             self.input_g = []
 
     def get_in_deg(self, dst, num_nodes):
+        """"
+        Calculates the in-degree (number of incoming edges) for each node.
+        """
         return torch.bincount(dst, minlength=num_nodes).tolist()
 
     def get_out_adj_list(self, src, dst):
+        """
+        Builds an outgoing adjacency list representation of the graph.
+        """
         out_adj_list = defaultdict(list)
         num_edges = len(src)
         for i in range(num_edges):
@@ -38,6 +44,9 @@ class LayerDAGBaseDataset(Dataset):
         return out_adj_list
 
     def get_in_adj_list(self, src, dst):
+        """
+        Builds an incoming adjacency list representation of the graph.
+        """
         in_adj_list = defaultdict(list)
         num_edges = len(src)
         for i in range(num_edges):
@@ -45,6 +54,9 @@ class LayerDAGBaseDataset(Dataset):
         return in_adj_list
 
     def base_postprocess(self):
+        """
+        Converts the Python lists into PyTorch tensors for efficient processing.
+        """
         self.input_src = torch.LongTensor(self.input_src)
         self.input_dst = torch.LongTensor(self.input_dst)
 
@@ -88,7 +100,11 @@ class LayerDAGNodeCountDataset(LayerDAGBaseDataset):
             input_e_start = len(self.input_src)
             input_e_end = len(self.input_src)
 
+            # Create mapping from node ID to position in input_x_n
+            node_id_to_pos = {}
+
             # Use a dummy node for representing the initial empty DAG.
+            node_id_to_pos[0] = len(self.input_x_n)
             self.input_x_n.append(dag_dataset.dummy_category)
             input_n_end += 1
             src = src + 1
@@ -135,13 +151,16 @@ class LayerDAGNodeCountDataset(LayerDAGBaseDataset):
                 # (2) Get the next layer.
                 next_frontiers = []
                 for u in frontiers:
+                    # Record position before appending
+                    node_id_to_pos[u] = len(self.input_x_n)
                     # -1 for the initial dummy node
                     self.input_x_n.append(x_n[u - 1])
                     self.input_level.append(level)
 
+                    # Convert node IDs to positions when storing edges
                     for t in in_adj_list[u]:
-                        self.input_src.append(t)
-                        self.input_dst.append(u)
+                        self.input_src.append(node_id_to_pos[t])
+                        self.input_dst.append(node_id_to_pos[u])
                         input_e_end += 1
 
                     for v in out_adj_list[u]:
@@ -173,8 +192,16 @@ class LayerDAGNodeCountDataset(LayerDAGBaseDataset):
     def __getitem__(self, index):
         input_e_start = self.input_e_start[index]
         input_e_end = self.input_e_end[index]
+        input_src = self.input_src[input_e_start:input_e_end]
+        input_dst = self.input_dst[input_e_start:input_e_end]
+
         input_n_start = self.input_n_start[index]
         input_n_end = self.input_n_end[index]
+        input_x_n = self.input_x_n[input_n_start:input_n_end]
+
+        # Remap edge indices from global to local (relative to this sample's nodes)
+        input_src = input_src - input_n_start
+        input_dst = input_dst - input_n_start
 
         # Absolute and relative (with respect to the new layer) layer idx
         # for potential extra encodings.
@@ -183,16 +210,12 @@ class LayerDAGNodeCountDataset(LayerDAGBaseDataset):
 
         if self.conditional:
             input_g = self.input_g[index]
-            input_y = self.input_y[input_g].item()
+            input_y = self.input_y[input_g]
 
-            return self.input_src[input_e_start:input_e_end],\
-                self.input_dst[input_e_start:input_e_end],\
-                self.input_x_n[input_n_start:input_n_end],\
+            return input_src, input_dst, input_x_n,\
                 input_abs_level, input_rel_level, input_y, self.label[index]
         else:
-            return self.input_src[input_e_start:input_e_end],\
-                self.input_dst[input_e_start:input_e_end],\
-                self.input_x_n[input_n_start:input_n_end],\
+            return input_src, input_dst, input_x_n,\
                 input_abs_level, input_rel_level, self.label[index]
 
 class LayerDAGNodePredDataset(LayerDAGBaseDataset):
@@ -225,8 +248,12 @@ class LayerDAGNodePredDataset(LayerDAGBaseDataset):
             input_e_start = len(self.input_src)
             input_e_end = len(self.input_src)
 
+            # Create mapping from node ID to position in input_x_n
+            node_id_to_pos = {}
+
             # Use a dummy node for representing the initial empty DAG, which
             # will be model input.
+            node_id_to_pos[0] = len(self.input_x_n)
             self.input_x_n.append(dag_dataset.dummy_category)
             input_n_end += 1
             src = src + 1
@@ -282,13 +309,16 @@ class LayerDAGNodePredDataset(LayerDAGBaseDataset):
                 # (2) Get the next layer.
                 next_frontiers = []
                 for u in frontiers:
+                    # Record position before appending
+                    node_id_to_pos[u] = len(self.input_x_n)
                     # -1 for the initial dummy node
                     self.input_x_n.append(x_n[u - 1])
                     self.input_level.append(level)
 
+                    # Convert node IDs to positions when storing edges
                     for t in in_adj_list[u]:
-                        self.input_src.append(t)
-                        self.input_dst.append(u)
+                        self.input_src.append(node_id_to_pos[t])
+                        self.input_dst.append(node_id_to_pos[u])
                         input_e_end += 1
 
                     for v in out_adj_list[u]:
@@ -307,15 +337,41 @@ class LayerDAGNodePredDataset(LayerDAGBaseDataset):
         if get_marginal:
             # Case 1 (a single node attribute): self.input_x_n is of shape (N).
             # Case 2 (multiple node attributes): self.input_x_n is of shape (N, F).
+            # For multi-dim features like [gate_type, qubit_0, qubit_1], only compute
+            # marginals for gate_type (column 0), not for qubit indices (positional info).
             input_x_n = self.input_x_n
             if input_x_n.ndim == 1:
                 input_x_n = input_x_n.unsqueeze(-1)
 
             num_feats = input_x_n.shape[-1]
+
             x_n_marginal = []
+
+            # Compute marginal distribution for each feature dimension.
+            # For quantum circuits following the Q-Fusion paper approach, node features
+            # include wire information: [gate_type, qubit_0, qubit_1] (3D).
+            # The diffusion model requires marginal distributions for ALL dimensions
+            # to apply noise during training.
+            #
+            # Node feature dimensions:
+            #   - Column 0: gate type (categorical) - e.g., CNOT, H, X, etc.
+            #   - Column 1: first qubit index (positional) - which qubit wire
+            #   - Column 2: second qubit index (positional) - which qubit wire, or -1 for single-qubit gates
+            #
+            # For traditional datasets (e.g., TPU tiles), num_feats=1 (scalar gate type only).
             for f in range(num_feats):
                 input_x_n_f = input_x_n[:, f]
                 unique_x_n_f, x_n_count_f = input_x_n_f.unique(return_counts=True)
+                if unique_x_n_f.max().item() != len(x_n_count_f) - 1:
+                    print(f"ERROR: Feature dimension {f} has gaps!")
+                    print(f"  Unique values: {unique_x_n_f.tolist()}")
+                    print(f"  Max value: {unique_x_n_f.max().item()}")
+                    print(f"  Number of unique values: {len(x_n_count_f)}")
+                    print(f"  Expected max (consecutive): {len(x_n_count_f) - 1}")
+                    expected = set(range(unique_x_n_f.max().item() + 1))
+                    actual = set(unique_x_n_f.tolist())
+                    missing = sorted(expected - actual)
+                    print(f"  Missing values: {missing}")
                 assert unique_x_n_f.max().item() == len(x_n_count_f) - 1,\
                     'Need to re-label node types to be consecutive integers starting from 0'
 
@@ -323,13 +379,22 @@ class LayerDAGNodePredDataset(LayerDAGBaseDataset):
                 num_x_n_types_f = len(x_n_count_f) - 1
                 x_n_marginal_f = torch.zeros(num_x_n_types_f)
 
-                for c in range(len(x_n_count_f)):
-                    x_n_type_f_c = unique_x_n_f[c].item()
-                    # No need to include the dummy category for marginal computation.
-                    if x_n_type_f_c != num_x_n_types_f:
-                        x_n_marginal_f[x_n_type_f_c] = x_n_count_f[c].item()
+                if f == 0:
+                    # Column 0: Gate types are categorical features.
+                    # Use empirical marginal from the dataset (e.g., 30% CNOT, 20% H, etc.)
+                    for c in range(len(x_n_count_f)):
+                        x_n_type_f_c = unique_x_n_f[c].item()
+                        # No need to include the dummy category for marginal computation.
+                        if x_n_type_f_c != num_x_n_types_f:
+                            x_n_marginal_f[x_n_type_f_c] = x_n_count_f[c].item()
+                    x_n_marginal_f /= (x_n_marginal_f.sum() + 1e-8)
+                else:
+                    # Columns 1-2: Qubit indices are positional/structural features from Q-Fusion wire encoding.
+                    # They indicate which physical qubits (wires) a gate acts on, not semantic gate types.
+                    # Use uniform marginal since there's no inherent preference for which qubit index
+                    # should be sampled during diffusion - all qubit positions are equally valid.
+                    x_n_marginal_f = torch.ones(num_x_n_types_f) / num_x_n_types_f
 
-                x_n_marginal_f /= (x_n_marginal_f.sum() + 1e-8)
                 x_n_marginal.append(x_n_marginal_f)
 
             self.x_n_marginal = x_n_marginal
@@ -340,8 +405,17 @@ class LayerDAGNodePredDataset(LayerDAGBaseDataset):
     def __getitem__(self, index):
         input_e_start = self.input_e_start[index]
         input_e_end = self.input_e_end[index]
+        input_src = self.input_src[input_e_start:input_e_end]
+        input_dst = self.input_dst[input_e_start:input_e_end]
+
         input_n_start = self.input_n_start[index]
         input_n_end = self.input_n_end[index]
+        input_x_n = self.input_x_n[input_n_start:input_n_end]
+
+        # Remap edge indices from global to local (relative to this sample's nodes)
+        input_src = input_src - input_n_start
+        input_dst = input_dst - input_n_start
+
         label_start = self.label_start[index]
         label_end = self.label_end[index]
 
@@ -355,16 +429,12 @@ class LayerDAGNodePredDataset(LayerDAGBaseDataset):
 
         if self.conditional:
             input_g = self.input_g[index]
-            input_y = self.input_y[input_g].item()
+            input_y = self.input_y[input_g]
 
-            return self.input_src[input_e_start:input_e_end],\
-                self.input_dst[input_e_start:input_e_end],\
-                self.input_x_n[input_n_start:input_n_end],\
+            return input_src, input_dst, input_x_n,\
                 input_abs_level, input_rel_level, z_t, t, input_y, z
         else:
-            return self.input_src[input_e_start:input_e_end],\
-                self.input_dst[input_e_start:input_e_end],\
-                self.input_x_n[input_n_start:input_n_end],\
+            return input_src, input_dst, input_x_n,\
                 input_abs_level, input_rel_level, z_t, t, z
 
 class LayerDAGEdgePredDataset(LayerDAGBaseDataset):
@@ -435,7 +505,11 @@ class LayerDAGEdgePredDataset(LayerDAGBaseDataset):
             num_edges += len(src)
             num_nonsrc_nodes += len(x_n) - len(prev_frontiers)
 
+            # Create mapping from node ID to position in input_x_n
+            node_id_to_pos = {0: input_n_start}  # dummy node
+
             for u in prev_frontiers:
+                node_id_to_pos[u] = len(self.input_x_n)
                 self.input_x_n.append(x_n[u - 1])
                 self.input_level.append(level)
 
@@ -453,16 +527,22 @@ class LayerDAGEdgePredDataset(LayerDAGBaseDataset):
                 next_frontiers = []
                 temp_edge_count = 0
                 for u in current_frontiers:
+                    # Record position before appending
+                    node_id_to_pos[u] = len(self.input_x_n)
                     self.input_x_n.append(x_n[u - 1])
                     self.input_level.append(level)
 
-                    self.query_src.extend(src_candidates)
-                    self.query_dst.extend([u] * len(src_candidates))
-                    query_end += len(src_candidates)
+                    # Convert node IDs to positions when storing queries
+                    u_pos = node_id_to_pos[u]
                     for t in src_candidates:
+                        t_pos = node_id_to_pos[t]
+                        self.query_src.append(t_pos)
+                        self.query_dst.append(u_pos)
+                        query_end += 1
+
                         if t in in_adj_list[u]:
-                            self.input_src.append(t)
-                            self.input_dst.append(u)
+                            self.input_src.append(t_pos)
+                            self.input_dst.append(u_pos)
                             temp_edge_count += 1
                             self.label.append(1)
                         else:
@@ -523,6 +603,10 @@ class LayerDAGEdgePredDataset(LayerDAGBaseDataset):
         input_n_end = self.input_n_end[index]
         input_x_n = self.input_x_n[input_n_start:input_n_end]
 
+        # Remap edge indices from global to local (relative to this sample's nodes)
+        input_src = input_src - input_n_start
+        input_dst = input_dst - input_n_start
+
         # Absolute and relative (with respect to the new layer) layer idx
         # for potential extra encodings.
         input_abs_level = self.input_level[input_n_start:input_n_end]
@@ -533,6 +617,10 @@ class LayerDAGEdgePredDataset(LayerDAGBaseDataset):
         query_src = self.query_src[query_start:query_end]
         query_dst = self.query_dst[query_start:query_end]
         label = self.label[query_start:query_end]
+
+        # Remap query indices from global to local (relative to this sample's nodes)
+        query_src = query_src - input_n_start
+        query_dst = query_dst - input_n_start
 
         unique_src = torch.unique(query_src, sorted=False)
         unique_dst = torch.unique(query_dst, sorted=False)
@@ -546,7 +634,7 @@ class LayerDAGEdgePredDataset(LayerDAGBaseDataset):
 
         if self.conditional:
             input_g = self.input_g[index]
-            input_y = self.input_y[input_g].item()
+            input_y = self.input_y[input_g]
 
             return input_src, input_dst, noisy_src, noisy_dst, input_x_n,\
                 input_abs_level, input_rel_level, t, input_y, query_src, query_dst, label
@@ -588,10 +676,14 @@ def collate_node_count(data):
     if len(data[0]) == 7:
         batch_src, batch_dst, batch_x_n, batch_abs_level, batch_rel_level, batch_y, batch_label = map(list, zip(*data))
 
+        # Broadcast graph-level vector labels to all nodes
         y_ = []
         for i in range(len(batch_x_n)):
-            y_.extend([batch_y[i]] * len(batch_x_n[i]))
-        batch_y = torch.tensor(y_).unsqueeze(-1)
+            # Convert to tensor if needed, then broadcast to all nodes in this graph
+            y_tensor = torch.tensor(batch_y[i]) if not isinstance(batch_y[i], torch.Tensor) else batch_y[i]
+            y_broadcast = y_tensor.unsqueeze(0).expand(len(batch_x_n[i]), -1)
+            y_.append(y_broadcast)
+        batch_y = torch.cat(y_)
     else:
         batch_src, batch_dst, batch_x_n, batch_abs_level, batch_rel_level, batch_label = map(
             list, zip(*data))
@@ -617,10 +709,14 @@ def collate_node_pred(data):
         batch_src, batch_dst, batch_x_n, batch_abs_level, batch_rel_level,\
             batch_z_t, batch_t, batch_y, batch_z = map(list, zip(*data))
         # Broadcast graph-level conditional information to nodes.
+        # Broadcast graph-level vector labels to all nodes
         y_ = []
         for i in range(len(batch_x_n)):
-            y_.extend([batch_y[i]] * len(batch_x_n[i]))
-        batch_y = torch.tensor(y_).unsqueeze(-1)
+            # Convert to tensor if needed, then broadcast to all nodes in this graph
+            y_tensor = torch.tensor(batch_y[i]) if not isinstance(batch_y[i], torch.Tensor) else batch_y[i]
+            y_broadcast = y_tensor.unsqueeze(0).expand(len(batch_x_n[i]), -1)
+            y_.append(y_broadcast)
+        batch_y = torch.cat(y_)
 
     batch_size, batch_edge_index, batch_x_n, batch_abs_level, batch_rel_level,\
         batch_n2g_index = collate_common(
@@ -659,10 +755,14 @@ def collate_edge_pred(data):
             batch_abs_level, batch_rel_level, batch_t, batch_y,\
             batch_query_src, batch_query_dst, batch_label = map(list, zip(*data))
         # Broadcast graph-level conditional information to nodes.
+        # Broadcast graph-level vector labels to all nodes
         y_ = []
         for i in range(len(batch_x_n)):
-            y_.extend([batch_y[i]] * len(batch_x_n[i]))
-        batch_y = torch.tensor(y_).unsqueeze(-1)
+            # Convert to tensor if needed, then broadcast to all nodes in this graph
+            y_tensor = torch.tensor(batch_y[i]) if not isinstance(batch_y[i], torch.Tensor) else batch_y[i]
+            y_broadcast = y_tensor.unsqueeze(0).expand(len(batch_x_n[i]), -1)
+            y_.append(y_broadcast)
+        batch_y = torch.cat(y_)
 
     num_nodes_cumsum = torch.cumsum(torch.tensor(
         [0] + [len(x_n_i) for x_n_i in batch_x_n]), dim=0)

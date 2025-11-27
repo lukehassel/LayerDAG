@@ -24,10 +24,26 @@ class SinusoidalPE(nn.Module):
         if self.pe_size == 0:
             return torch.zeros(len(position), 0).to(position.device)
 
-        return torch.cat([
-            torch.sin(position * self.div_term),
-            torch.cos(position * self.div_term)
-        ], dim=-1)
+        # Handle multi-dimensional labels (e.g., [fidelity, efficiency])
+        if position.ndim == 1:
+            position = position.unsqueeze(-1)
+
+        # Each label value gets its own sinusoidal embedding using multiple frequencies.
+        # This creates smooth, continuous representations where similar values have similar embeddings:
+        #   fidelity=0.90 → [0.78, 0.09, 0.62, 0.99, ...]
+        #   fidelity=0.91 → [0.79, 0.09, 0.62, 0.99, ...]  (very similar!)
+        #   fidelity=0.50 → [-0.02, 0.05, 0.99, 0.99, ...]  (very different!)
+        # This allows the model to interpolate and generalize to unseen label values.
+        embeddings = []
+        for i in range(position.shape[-1]):
+            pos_i = position[:, i:i+1]
+            emb_i = torch.cat([
+                torch.sin(pos_i * self.div_term),
+                torch.cos(pos_i * self.div_term)
+            ], dim=-1)
+            embeddings.append(emb_i)
+
+        return torch.cat(embeddings, dim=-1)
 
 class BiMPNNLayer(nn.Module):
     def __init__(self, in_size, out_size):
@@ -417,9 +433,11 @@ class LayerDAG(nn.Module):
             num_x_n_cat = torch.LongTensor([num_x_n_cat])
 
         self.dummy_x_n = num_x_n_cat - 1
+        # hidden_size accounts for: node embeddings + PE + label embeddings
+        # For 2D labels [fidelity, efficiency], y_emb_size is doubled
         hidden_size = len(num_x_n_cat) * node_count_encoder_config['x_n_emb_size'] +\
             node_count_encoder_config['pe_emb_size'] +\
-            node_count_encoder_config['y_emb_size']
+            2 * node_count_encoder_config['y_emb_size']  # 2D labels 
         node_count_encoder = BiMPNNEncoder(num_x_n_cat,
                                            hidden_size=hidden_size,
                                            **node_count_encoder_config).to(device)
@@ -429,9 +447,11 @@ class LayerDAG(nn.Module):
             num_classes=max_layer_size+1).to(device)
 
         self.node_diffusion = node_diffusion
+        # hidden_size accounts for: node embeddings + PE + label embeddings
+        # For 2D labels [fidelity, efficiency], y_emb_size is doubled
         hidden_size = len(num_x_n_cat) * node_pred_graph_encoder_config['x_n_emb_size'] +\
             node_pred_graph_encoder_config['pe_emb_size'] +\
-            node_pred_graph_encoder_config['y_emb_size']
+            2 * node_pred_graph_encoder_config['y_emb_size']  # 2D labels
         node_pred_graph_encoder = BiMPNNEncoder(num_x_n_cat, hidden_size=hidden_size,
                                                 **node_pred_graph_encoder_config).to(device)
         self.node_pred_model = NodePredModel(node_pred_graph_encoder,
@@ -441,9 +461,11 @@ class LayerDAG(nn.Module):
                                              **node_predictor_config).to(device)
 
         self.edge_diffusion = edge_diffusion
+        # hidden_size accounts for: node embeddings + PE + label embeddings
+        # For 2D labels [fidelity, efficiency], y_emb_size is doubled
         hidden_size = len(num_x_n_cat) * edge_pred_graph_encoder_config['x_n_emb_size'] +\
             edge_pred_graph_encoder_config['pe_emb_size'] +\
-            edge_pred_graph_encoder_config['y_emb_size']
+            2 * edge_pred_graph_encoder_config['y_emb_size']  # 2D labels
         edge_pred_graph_encoder = BiMPNNEncoder(num_x_n_cat, hidden_size=hidden_size,
                                                 **edge_pred_graph_encoder_config).to(device)
         self.edge_pred_model = EdgePredModel(edge_pred_graph_encoder,
@@ -779,9 +801,13 @@ class LayerDAG(nn.Module):
         if y_list is None:
             return None
 
+        # Broadcast vector labels [fidelity, efficiency] to all nodes in each graph
         y_list_ = []
         for i in range(len(x_n_list)):
-            y_list_.append(torch.zeros(len(x_n_list[i]), 1).fill_(y_list[i]))
+            # y_list[i] is a vector like [0.9, 0.7] or tensor with shape (2,)
+            y_tensor = torch.tensor(y_list[i]).unsqueeze(0)  # Shape: (1, 2)
+            y_broadcast = y_tensor.expand(len(x_n_list[i]), -1)  # Shape: (num_nodes, 2)
+            y_list_.append(y_broadcast)
         batch_y = torch.cat(y_list_).to(device)
 
         return batch_y

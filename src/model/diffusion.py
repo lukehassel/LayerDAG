@@ -170,12 +170,15 @@ class EdgeDiscreteDiffusion(nn.Module):
                alpha_bar_s,
                alpha_bar_t,
                marginal):
-        M = torch.zeros(2)
+        # Get device from alpha_t
+        device = alpha_t.device if isinstance(alpha_t, torch.Tensor) else 'cpu'
+
+        M = torch.zeros(2, device=device)
         M = torch.tensor([
             1 - marginal, marginal
-        ])
+        ], device=device)
         M = M.unsqueeze(0).expand(2, -1)
-        I = torch.eye(2)
+        I = torch.eye(2, device=device)
 
         Q_t = alpha_t * I + (1 - alpha_t) * M
         Q_bar_s = alpha_bar_s * I + (1 - alpha_bar_s) * M
