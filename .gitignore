@@ -3,3 +3,8 @@ wandb
 *.pth
 logs/
 venv/
+data/
+data_files/
+logs/
+venv_training/
+test_samples/

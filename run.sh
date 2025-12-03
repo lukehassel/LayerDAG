@@ -2,13 +2,18 @@
 #SBATCH --job-name=layerdag_train
 #SBATCH --output=logs/layerdag_%j.out
 #SBATCH --error=logs/layerdag_%j.err
-#SBATCH --time=24:00:00
+#SBATCH --time=200:00:00
+#SBATCH --account=lect0163
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=1
+#SBATCH --ntasks=1
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --partition=c23g
+
+# Ensure we run from the repository root (directory containing this script)
+cd "$(dirname "$0")"
 
 # Load Python 3.10.8 module and set up virtual environment
 
@@ -42,28 +47,17 @@ fi
 echo "Activating virtual environment..."
 source venv/bin/activate
 
-# Install PyTorch 2.0 for H100 support
-echo "Installing PyTorch 2.0.1+cu118..."
-pip install torch==2.0.1+cu118 --index-url https://download.pytorch.org/whl/cu118
-
-# Install DGL compatible with PyTorch 2.0
-echo "Installing DGL 1.1.2+cu118..."
-pip install dgl==1.1.2+cu118 -f https://data.dgl.ai/wheels/cu118/repo.html
-
-# Install other dependencies
-echo "Installing additional dependencies..."
-pip install tqdm einops wandb pydantic pandas
-
-# Install specific numpy version
-echo "Installing numpy 1.26.3..."
-pip install numpy==1.26.3
+# pip install -r requirements.txt
 
 echo "Setup complete!"
 
-# Run training
-echo "Starting training..."
+# Run script
+echo "Running ..."
 #python train.py --config_file configs/LayerDAG/tpu_tile.yaml
-python train.py --config_file configs/LayerDAG/tpu_tile_test.yaml
+#python train.py --config_file configs/LayerDAG/tpu_tile_test.yaml
+
+# Use module mode so that the repo root is on PYTHONPATH and `src` can be imported
+python3 -m encoder.dataset
 
 echo ""
 echo "=========================================="
