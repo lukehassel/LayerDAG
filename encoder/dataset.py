@@ -1,4 +1,5 @@
 import os
+import gc
 import torch
 import torch.nn as nn
 import dgl
@@ -31,7 +32,8 @@ NUM_GATE_TYPES = len(get_universal_gate_set()['all'])
 
 class EncoderDataset(Dataset):
     def __init__(self, file_path=None, size=100, min_qubits=3, max_qubits=5, 
-                 min_depth=5, max_depth=15, verbose=False):
+                 min_depth=5, max_depth=15, verbose=False,
+                 chunk_size=1000):
         """
         Args:
             file_path (str): Path to save/load the dataset (e.g. 'data/train_v1.pt')
@@ -40,7 +42,23 @@ class EncoderDataset(Dataset):
         self.size = size
         self.verbose = verbose
         self.file_path = file_path
-        self.data_pairs = [] # List of tuples: ( (g1,t1,l1), (g2,t2,l2) )
+
+        # If file_path is a directory (or has no .pt suffix), stream data
+        # to multiple chunk files to keep memory usage low.
+        self.stream_to_dir = (
+            self.file_path is not None
+            and not self.file_path.endswith(".pt")
+        )
+        self.chunk_size = chunk_size
+        self._current_chunk = []
+        self._chunk_idx = 0
+
+        # In in‑memory mode we keep all pairs in RAM (original behavior).
+        self.data_pairs = []  # List of dicts
+
+        # For streamed mode, track chunk metadata so __len__/__getitem__ work.
+        self._chunks = []  # list of (path, length)
+        self._total_len = 0
         
         # Initialize Diffusion only if needed for generation
         self.diffusion = None
@@ -51,7 +69,9 @@ class EncoderDataset(Dataset):
         # else:
         self._init_diffusion()
         self._generate_dataset(min_qubits, max_qubits, min_depth, max_depth)
-        if self.file_path:
+
+        # In streaming mode, data is already flushed to disk in chunks.
+        if self.file_path and not self.stream_to_dir:
             self._save_dataset()
 
     def _init_diffusion(self):
@@ -67,17 +87,43 @@ class EncoderDataset(Dataset):
             print(f"Successfully loaded {len(self.data_pairs)} pairs.")
 
     def _save_dataset(self):
+        """Save the entire in‑memory dataset to a single .pt file."""
         if self.verbose:
             print(f"Saving dataset to {self.file_path}...")
-        
-        # Ensure directory exists
+
         directory = os.path.dirname(self.file_path)
         if directory and not os.path.exists(directory):
             os.makedirs(directory)
-            
+
         torch.save(self.data_pairs, self.file_path)
         if self.verbose:
             print("Dataset saved.")
+
+    def _flush_chunk_to_disk(self):
+        """Write the current in‑memory chunk to disk and clear it."""
+        if not self._current_chunk:
+            return
+
+        assert self.stream_to_dir, "Chunk flushing only valid in streaming mode."
+
+        os.makedirs(self.file_path, exist_ok=True)
+        chunk_path = os.path.join(
+            self.file_path,
+            f"dataset_chunk_{self._chunk_idx:06d}.pt",
+        )
+        if self.verbose:
+            print(f"Flushing {len(self._current_chunk)} samples to {chunk_path}...")
+
+        torch.save(self._current_chunk, chunk_path)
+
+        num = len(self._current_chunk)
+        self._chunks.append((chunk_path, num))
+        self._total_len += num
+
+        # Explicitly release references and ask GC to reclaim Python objects.
+        self._current_chunk.clear()
+        gc.collect()
+        self._chunk_idx += 1
             
     def _apply_noise_to_circuit(self, qc, t_val=None, debug=False):
         # 1. Setup
@@ -186,11 +232,13 @@ class EncoderDataset(Dataset):
     def _generate_dataset(self, min_q, max_q, min_d, max_d):
         if self.verbose:
             print(f"Generating {self.size} pairs (ZX + Noise)...")
-            
+
         pbar = tqdm(total=self.size, disable=not self.verbose)
         attempts = 0
-        
-        while len(self.data_pairs) < self.size:
+
+        num_generated = 0
+
+        while num_generated < self.size:
             attempts += 1
             if attempts > self.size * 20:
                 print("\nTimeout: Could not generate enough valid pairs.")
@@ -211,21 +259,60 @@ class EncoderDataset(Dataset):
             #print("Noisy Gate Count: ", len(noisy_circuit.data))
             
             fid_res = get_fidelity(circuit, noisy_circuit)
-            
-            #print("Fidelity: ", fid_res)
-                
+
             # Extract just the numeric fidelity value from the dict
             fidelity_value = fid_res['fidelity']
-            self.data_pairs.append({"circuit_1": qasm2.dumps(circuit), "circuit_2": qasm2.dumps(noisy_circuit), "fidelity": fidelity_value})
+            sample = {
+                "circuit_1": qasm2.dumps(circuit),
+                "circuit_2": qasm2.dumps(noisy_circuit),
+                "fidelity": fidelity_value,
+            }
+
+            if self.stream_to_dir:
+                # Keep memory bounded: only hold up to chunk_size samples at once.
+                self._current_chunk.append(sample)
+                if len(self._current_chunk) >= self.chunk_size:
+                    self._flush_chunk_to_disk()
+            else:
+                self.data_pairs.append(sample)
+
+            # Drop large temporaries before next iteration.
+            del circuit, noisy_circuit, fid_res, sample
+            gc.collect()
+
+            num_generated += 1
             pbar.update(1)
-                
+
+        # Flush any remaining samples in the last partial chunk.
+        if self.stream_to_dir:
+            self._flush_chunk_to_disk()
+
         pbar.close()
 
     def __len__(self):
+        if self.stream_to_dir:
+            return self._total_len
         return len(self.data_pairs)
 
     def __getitem__(self, idx):
-        return self.data_pairs[idx]
+        if not self.stream_to_dir:
+            return self.data_pairs[idx]
+
+        # Map global index to (chunk_path, local_index) and load lazily.
+        if idx < 0:
+            idx = self._total_len + idx
+        if idx < 0 or idx >= self._total_len:
+            raise IndexError(idx)
+
+        offset = idx
+        for chunk_path, length in self._chunks:
+            if offset < length:
+                chunk = torch.load(chunk_path)
+                return chunk[offset]
+            offset -= length
+
+        # Should not reach here
+        raise IndexError(idx)
 
 # ==========================================
 # Collate Function
@@ -247,12 +334,14 @@ def collate_dict_batch(batch):
 # 5. Main Execution (Test)
 # ==========================================
 if __name__ == "__main__":
-    # Example Usage:
-    # 1. Define paths
-    DATA_PATH = "data/dataset.pt"
-    
-    # 2. Instantiate (will generate if file missing, load if present)
-    dataset = EncoderDataset(file_path=DATA_PATH, size=9999999, verbose=True)
+    DATA_DIR = "/Volumes/Samsung_T5/layerdag_dataset"  # directory on your T5
+
+    dataset = EncoderDataset(
+        file_path=DATA_DIR,     # note: directory, not a .pt file
+        size=9999999,            # pick a reasonable size
+        verbose=True,
+        chunk_size=1000,        # how many samples per file before flushing
+    )
     
     # 3. Verify
     print(f"\nDataset Ready. Total Size: {len(dataset)}")

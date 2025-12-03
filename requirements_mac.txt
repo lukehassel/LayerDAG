@@ -1,0 +1,26 @@
+# --- Index URLs for GPU support ---
+# PyTorch Index (cu118)
+--extra-index-url https://download.pytorch.org/whl/cu118
+# DGL Wheel Repository
+--find-links https://data.dgl.ai/wheels/cu118/repo.html
+
+# --- Core Frameworks (Pinned for H100/CUDA 11.8) ---
+torch==2.0.1
+dgl==1.1.2
+
+# --- Quantum Libraries (From imports) ---
+qiskit
+pyzx
+mqt.yaqs
+
+# --- Scientific & Data ---
+numpy==1.26.3
+pandas
+matplotlib
+
+# --- MLOps & Utilities ---
+tqdm
+einops
+wandb
+pydantic
+pylatexenc

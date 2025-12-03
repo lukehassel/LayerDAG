@@ -8,3 +8,6 @@ data_files/
 logs/
 venv_training/
 test_samples/
+.miniforge/
+.py310/
+.vscode/

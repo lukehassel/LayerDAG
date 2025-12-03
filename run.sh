@@ -47,7 +47,7 @@ fi
 echo "Activating virtual environment..."
 source venv/bin/activate
 
-# pip install -r requirements.txt
+pip install -r requirements.txt
 
 echo "Setup complete!"
 
@@ -57,7 +57,11 @@ echo "Running ..."
 #python train.py --config_file configs/LayerDAG/tpu_tile_test.yaml
 
 # Use module mode so that the repo root is on PYTHONPATH and `src` can be imported
-python3 -m encoder.dataset
+#python3 -m encoder.dataset
+
+#python encoder/combine_chunks.py --chunk_dir /Volumes/Samsung_T5/layerdag_dataset
+
+python encoder/load_dataset.py
 
 echo ""
 echo "=========================================="
